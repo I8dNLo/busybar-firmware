@@ -1,7 +1,9 @@
 #include "color.h"
 
 #include <core/check.h>
-#include "strint.h"
+#include <limits.h>
+
+#include "hex.h"
 
 // https://stackoverflow.com/questions/24152553/hsv-to-rgb-and-back-without-floating-point-math-in-python
 Color color_hsv_to_rgb(ColorHsv hsv) {
@@ -89,15 +91,32 @@ Color color_hexa_to_rgb(uint32_t hexa) {
     return rgb;
 }
 
-bool color_parse_hexa_string(const char* hexa, Color* color_out) {
-    if(strlen(hexa) != strlen("#RRGGBBAA")) return false;
-    hexa++;
+bool color_parse_hex_string(const char* hex, Color* color_out) {
+    if(strlen(hex) != strlen("#RRGGBB") || *hex != '#') return false;
 
-    uint32_t hexa_int;
-    if(strint_to_uint32(hexa, NULL, &hexa_int, 16) != StrintParseNoError) return false;
+    uint8_t rgb[3];
+    if(!hex_chars_to_uint8(hex + 1, rgb)) return false;
 
-    *color_out = color_hexa_to_rgb(hexa_int);
+    *color_out = (Color)COLOR_MAKE_RGB(rgb[0], rgb[1], rgb[2]);
     return true;
+}
+
+bool color_parse_hexa_string(const char* hexa, Color* color_out) {
+    if(strlen(hexa) != strlen("#RRGGBBAA") || *hexa != '#') return false;
+
+    uint8_t rgba[4];
+    if(!hex_chars_to_uint8(hexa + 1, rgba)) return false;
+
+    *color_out = (Color)COLOR_MAKE_RGBA(rgba[0], rgba[1], rgba[2], rgba[3]);
+    return true;
+}
+
+uint8_t color_rgb_to_l8(Color color) {
+    /* 
+     * BT.601 luma coefficients (0.299 * R + 0.587 * G + 0.114 * B) via
+     * fixed-point arithmetic: L = (77 * R + 150 * G + 29 * B) >> 8. 
+     */
+    return (color.r * 77 + color.g * 150 + color.b * 29) >> CHAR_BIT;
 }
 
 void color_buf_l8_to_l4(void* dst, const void* src, size_t size) {

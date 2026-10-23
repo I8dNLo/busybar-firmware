@@ -3,6 +3,9 @@
 #include <wifi/wifi_util.h>
 #include <path.h>
 
+#include <http/http_response.h>
+#include <http/http_headers.h>
+
 MU_TEST(misc_tests_ipv6_format) {
     char buf[40];
 

@@ -11,7 +11,7 @@
         label="Forget all pairings"
         variant="outline"
         color="neutral"
-        @click="showMatterDeleteModal = true"
+        @click="() => { showMatterDeleteModal = true; }"
       />
       <UButton
         label="Pair device"
@@ -26,7 +26,7 @@
         data-id="modal-matter-link"
         title="Pair device with Matter"
         :icon="colorMode.value === 'dark' ? 'i-bi-matter-bubble-dark' : 'i-bi-matter-bubble'"
-        :dismissable="false"
+        show-close-button
         no-actions
         @after:leave="onMatterLinkModalClose"
       >

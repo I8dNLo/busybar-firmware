@@ -142,7 +142,9 @@
         "utz",
         "fetch",
         "storage_utils",
-        "js_app"
+        "js_app",
+        "xpm",
+        "http"
     ],
     "fw_modules": [
         "fw_elf",
@@ -163,7 +165,8 @@
         "cli",
         "upload_resources",
         "u5_updater",
-        "provisioning"
+        "provisioning",
+        "update_cacert"
     ],
     "extra_target_meta": {
         "debug_tags": [

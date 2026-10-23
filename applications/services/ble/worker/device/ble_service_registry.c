@@ -2,7 +2,7 @@
 
 // #include "../../service/ble_service_i.h"
 #include "../../service/target/ble_service_target.h"
-#include "../../ble_common.h"
+#include "../../ble_log.h"
 #include "../_nwp_callbacks/ble_nwp_headers.h"
 
 #include <m-dict.h>
@@ -186,7 +186,7 @@ bool ble_service_registry_add_service_entry(
         for(uint8_t i = 0; i < service->config->char_count; i++) {
             BleCharacteristicObject* ch = service->chars[i];
 
-            const BleCharacteristicDescriptor* ch_config = ble_characteristic_get_config(ch);
+            const BleCharacteristicConfig* ch_config = ble_characteristic_get_config(ch);
 
             memset(&rsi_uuid, 0, sizeof(uuid_t));
             ble_service_registry_prepare_uuid(&ch_config->uuid, ch_config->uuid_size, &rsi_uuid);

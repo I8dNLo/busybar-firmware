@@ -52,7 +52,7 @@
                   :color="configStore.pinPopover ? 'primary' : 'neutral'"
                   variant="ghost"
                   square
-                  @click="configStore.pinPopover = !configStore.pinPopover"
+                  @click="() => { configStore.pinPopover = !configStore.pinPopover; }"
                 />
               </UTooltip>
 
@@ -62,12 +62,15 @@
                 color="neutral"
                 variant="ghost"
                 square
-                @click="isPopoverOpen = false"
+                @click="() => { isPopoverOpen = false; }"
               />
             </div>
           </div>
 
-          <div v-if="showReloadPrompt" class="rounded-xl flex items-center justify-between gap-2">
+          <div
+            v-if="showReloadPrompt"
+            class="rounded-xl flex items-center justify-between gap-2"
+          >
             <div class="text-sm pl-3">
               Changes saved. Reload the page to apply
             </div>
@@ -229,7 +232,8 @@ onMounted(() => {
     return;
   }
   try {
-    const changes = JSON.parse(changesString).filter(change => configStore.items.some(i => i.name === change.name));
+    const changes = (JSON.parse(changesString) as Pick<ConfigStoreItem, 'name' | 'value'>[])
+      .filter(change => configStore.items.some(i => i.name === change.name));
     changesStringOnPageLoad.value = changesString;
     for (const change of changes) {
       const item = configStore.items.find(i => i.name === change.name);

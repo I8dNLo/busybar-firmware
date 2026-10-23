@@ -27,6 +27,7 @@ path = [
     "lib/flipper_format/**",
     "lib/formatters/**",
     "lib/js_app/**",
+    "lib/http/**",
     "lib/lvgl_addons/**",
     "lib/mbedtls_patch/**",
     "lib/netstat/**",
@@ -37,9 +38,17 @@ path = [
     "lib/storage_utils/*",
     "lib/toolbox/**",
     "lib/sl_glue/**",
+    "lib/xpm/**",
 ]
 SPDX-FileCopyrightText = "2024-2026 Flipper FZCO"
 SPDX-License-Identifier = "GPL-2.0-or-later"
+
+[[annotations]]
+path = [
+    "applications_js/**",
+]
+SPDX-FileCopyrightText = "2024-2026 Flipper FZCO"
+SPDX-License-Identifier = "MIT"
 
 [[annotations]]
 path = [

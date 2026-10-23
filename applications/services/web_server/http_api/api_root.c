@@ -5,8 +5,27 @@
 #include <time/time.h>
 #include <datetime.h>
 #include <sysctl/sysctl.h>
+#include <api_tokens/api_tokens.h>
+#include <cjson/cJSON.h>
+#include <js_runner/js_fetch_ext_header.h>
 
 #define TAG "HttpApi"
+
+typedef enum {
+    HttpApiAccessStatusDenied = (1 << 0),
+    HttpApiAccessStatusGranted = (1 << 1),
+    HttpApiAccessStatusGrantedToAll = (1 << 2) | HttpApiAccessStatusGranted,
+    HttpApiAccessStatusGrantedViaUserPassword = (1 << 3) | HttpApiAccessStatusGranted,
+    HttpApiAccessStatusGrantedViaToken = (1 << 4) | HttpApiAccessStatusGranted,
+    HttpApiAccessStatusGrantedViaEndpointAllowList = (1 << 5) | HttpApiAccessStatusGranted,
+    HttpApiAccessStatusGrantedViaNetifAllowList = (1 << 6) | HttpApiAccessStatusGranted,
+    HttpApiAccessStatusMax,
+} HttpApiAccessStatus;
+
+typedef struct {
+    HttpApiAccessStatus status;
+    char token[API_TOKENS_LENGTH + 1];
+} HttpApiAccessStatusEx;
 
 // Read the 3-digit HTTP status code from the queued response in conn->send.
 // "HTTP/1.x NNN ..." — prefix is 9 bytes, then 3 ASCII status digits.
@@ -109,14 +128,42 @@ void http_api_log_access(struct mg_connection* conn, struct mg_http_message* msg
 #define ACCESS_KEY_LEN_MIN 4
 #define ACCESS_KEY_LEN_MAX 10
 
-// Always accessible API endpoints
-static const struct {
+typedef enum {
+    HttpApiAccessMatchTypeExact,
+    HttpApiAccessMatchTypePrefix
+} HttpApiAccessMatchType;
+
+typedef struct {
     const char* uri;
+    HttpApiAccessMatchType match_type;
     HttpMethod method;
-} api_access_whitelist[] = {
-    {"version", HttpMethodGet},
-    {"access", HttpMethodGet},
-    {"transport", HttpMethodGet},
+} HttpApiAccess;
+
+// Always accessible API endpoints
+static const HttpApiAccess api_access_allowlist[] = {
+    {"version", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"access", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"transport", HttpApiAccessMatchTypeExact, HttpMethodGet},
+};
+
+static const HttpApiAccess js_apps_api_allowlist[] = {
+    {"apps/settings", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"display/brightness", HttpApiAccessMatchTypeExact, HttpMethodGet | HttpMethodPost},
+    {"display/draw", HttpApiAccessMatchTypeExact, HttpMethodPost | HttpMethodDelete},
+    {"audio/play", HttpApiAccessMatchTypeExact, HttpMethodPost | HttpMethodDelete},
+    {"busy", HttpApiAccessMatchTypePrefix, HttpMethodGet | HttpMethodPut},
+    {"name", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"audio/volume", HttpApiAccessMatchTypePrefix, HttpMethodGet | HttpMethodPost},
+    {"time", HttpApiAccessMatchTypePrefix, HttpMethodGet},
+    {"wifi/status", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"version", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"access", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"transport", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"status", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"status/device", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"status/firmware", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"status/system", HttpApiAccessMatchTypeExact, HttpMethodGet},
+    {"status/power", HttpApiAccessMatchTypeExact, HttpMethodGet},
 };
 
 typedef struct {
@@ -127,6 +174,7 @@ typedef struct {
         ApiAccessKeyRequired,
     } access_mode;
     FuriString* access_key;
+    ApiTokens* tokens;
 } ApiRootCtx;
 
 static bool http_api_version_callback(
@@ -260,59 +308,156 @@ static void http_api_access_set_callback(
     }
 }
 
-static bool http_api_is_access_allowed(
+static HttpApiAccessStatus http_api_process_allowlist(
+    FuriString* path,
+    const HttpMethod method,
+    const HttpApiAccess* allowlist,
+    const size_t allowlist_count) {
+    HttpApiAccessStatus status = HttpApiAccessStatusMax;
+    for(size_t i = 0; i < allowlist_count; i++) {
+        const HttpApiAccess* item = &allowlist[i];
+        if(item->match_type == HttpApiAccessMatchTypeExact) {
+            if(furi_string_equal(path, item->uri) && (method & item->method)) {
+                status = HttpApiAccessStatusGrantedViaEndpointAllowList;
+                break;
+            }
+        } else if((item->match_type == HttpApiAccessMatchTypePrefix) && (method & item->method)) {
+            size_t pos = furi_string_search(path, item->uri);
+            if(pos == 0) {
+                size_t path_len = furi_string_size(path);
+                size_t template_len = strlen(item->uri);
+                if(path_len == template_len) {
+                    status = HttpApiAccessStatusGrantedViaEndpointAllowList;
+                    break;
+                } else if(path_len > template_len) {
+                    char next_symbol = furi_string_get_char(path, template_len);
+                    if(next_symbol == '/') {
+                        status = HttpApiAccessStatusGrantedViaEndpointAllowList;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return status;
+}
+
+bool http_api_is_request_from_js(struct mg_http_message* msg) {
+    bool is_js = false;
+    const struct mg_str* header = mg_http_get_header(msg, JS_FETCH_EXTRA_HEADER);
+
+    if(header != NULL) {
+        is_js = (mg_strcasecmp(*header, mg_str(JS_FETCH_EXTRA_VALUE)) == 0);
+    }
+
+    return is_js;
+}
+
+static inline bool http_api_path_is_safe(struct mg_http_message* msg) {
+    char decoded[MG_PATH_MAX];
+    int n = mg_url_decode(msg->uri.buf, msg->uri.len, decoded, sizeof(decoded), 0);
+    return !(n > 0 && (strstr(decoded, "..") != NULL));
+}
+
+static HttpApiAccessStatusEx http_api_access_status(
     ApiRootCtx* context,
     FuriString* path,
     HttpMethod method,
     struct mg_connection* conn,
     struct mg_http_message* msg) {
-    // CORS preflight requests cannot carry credentials; always allow
-    if(method == HttpMethodOptions) return true;
+    HttpApiAccessStatusEx status_ex;
+    memset(&status_ex, 0, sizeof(status_ex));
+    status_ex.status = HttpApiAccessStatusMax;
 
-    for(size_t i = 0; i < COUNT_OF(api_access_whitelist); i++) {
-        if(furi_string_equal(path, api_access_whitelist[i].uri) &&
-           (method & api_access_whitelist[i].method)) {
-            return true;
+    do {
+        if(!http_api_path_is_safe(msg)) {
+            status_ex.status = HttpApiAccessStatusDenied;
+            break;
         }
-    }
 
-    bool is_usb = is_connection_on_netif(conn, NetworkNetifUsb);
+        // CORS preflight requests cannot carry credentials; always allow
+        if(method == HttpMethodOptions) {
+            status_ex.status = HttpApiAccessStatusGranted;
+            break;
+        }
 
-    uint8_t* ip = conn->rem.addr.ip;
-    bool is_localhost = !conn->rem.is_ip6;
-    is_localhost &= (ip[0] == 127) && (ip[1] == 0) && (ip[2] == 0) && (ip[3] == 1);
+        status_ex.status = http_api_process_allowlist(
+            path, method, api_access_allowlist, COUNT_OF(api_access_allowlist));
+        if(status_ex.status != HttpApiAccessStatusMax) break;
 
-    if(!is_usb && !is_localhost) {
-        if(context->access_mode == ApiAccessEnabled) {
-            return true;
-        } else if(context->access_mode == ApiAccessKeyRequired) {
-            furi_assert(context->access_key);
-            struct mg_str request_key_temp;
-
-            struct mg_str* request_key = NULL;
-            char key_str[ACCESS_KEY_LEN_MAX + 1];
-            if(method == HttpMethodWebSocket) {
-                // Upgrade to WebSocket - get key from URI
-                int key_len =
-                    mg_http_get_var(&msg->query, "x-api-token", key_str, ACCESS_KEY_LEN_MAX + 1);
-                if(key_len > 0) {
-                    request_key_temp = mg_str_n(key_str, key_len);
-                    request_key = &request_key_temp;
-                }
-            } else {
-                // Usual request - get key from header
-                request_key = mg_http_get_header(msg, "X-API-Token");
-            }
-            if(request_key != NULL) {
-                struct mg_str access_key = mg_str(furi_string_get_cstr(context->access_key));
-                if(mg_strcmp(*request_key, access_key) == 0) {
-                    return true;
-                }
+        bool is_js = http_api_is_request_from_js(msg);
+        if(is_js) {
+            HttpApiAccessStatus status = http_api_process_allowlist(
+                path, method, js_apps_api_allowlist, COUNT_OF(js_apps_api_allowlist));
+            if(status == HttpApiAccessStatusMax) {
+                status_ex.status = HttpApiAccessStatusDenied;
+                break;
             }
         }
-        return false;
-    }
-    return true;
+
+        uint8_t* ip = conn->rem.addr.ip;
+        bool is_localhost = !conn->rem.is_ip6;
+        is_localhost &= (ip[0] == 127) && (ip[1] == 0) && (ip[2] == 0) && (ip[3] == 1);
+
+        if(is_localhost) {
+            status_ex.status = HttpApiAccessStatusGrantedViaNetifAllowList;
+            break;
+        }
+
+        bool is_usb = is_connection_on_netif(conn, NetworkNetifUsb);
+
+        if(!is_usb) {
+            if(context->access_mode == ApiAccessDisabled) {
+                status_ex.status = HttpApiAccessStatusDenied;
+                break;
+            }
+            if(context->access_mode == ApiAccessEnabled) {
+                status_ex.status = HttpApiAccessStatusGrantedToAll;
+                break;
+            }
+        }
+
+        int token_length = 0;
+
+        if(method == HttpMethodWebSocket) {
+            token_length = mg_http_get_var(
+                &msg->query, "x-api-token", status_ex.token, sizeof(status_ex.token));
+        } else {
+            struct mg_str* request_key = mg_http_get_header(msg, "X-API-Token");
+            if(request_key) {
+                token_length = request_key->len;
+                memcpy(
+                    status_ex.token,
+                    request_key->buf,
+                    MIN(request_key->len, sizeof(status_ex.token) - 1));
+            }
+        }
+
+        bool token_provided = strlen(status_ex.token);
+
+        if(token_provided) {
+            if(token_length <= API_TOKENS_LENGTH) {
+                if(context->access_key &&
+                   (furi_string_cmp_str(context->access_key, status_ex.token) == 0)) {
+                    status_ex.status = HttpApiAccessStatusGrantedViaUserPassword;
+                    break;
+                }
+
+                if(api_tokens_validate_and_record_usage(context->tokens, status_ex.token)) {
+                    status_ex.status = HttpApiAccessStatusGrantedViaToken;
+                    break;
+                }
+            }
+        } else if(is_usb) {
+            status_ex.status = HttpApiAccessStatusGrantedViaNetifAllowList;
+            break;
+        }
+
+        status_ex.status = HttpApiAccessStatusDenied;
+        break;
+    } while(0);
+
+    return status_ex;
 }
 
 static bool http_api_is_version_allowed(
@@ -358,6 +503,165 @@ static bool http_api_is_version_allowed(
         }
     }
     return true;
+}
+
+static cJSON* api_access_tokens_entry_to_json(const ApiTokensEntry* entry) {
+    furi_assert(entry);
+
+    cJSON* json_token = cJSON_CreateObject();
+    cJSON_AddStringToObject(json_token, "short_id", entry->short_id);
+    cJSON_AddStringToObject(json_token, "display_id", entry->display_id);
+    cJSON_AddStringToObject(json_token, "name", entry->owner);
+
+    char buffer[64];
+
+    snprintf(buffer, sizeof(buffer), "%lld", entry->created_at);
+    cJSON_AddStringToObject(json_token, "created_at", buffer);
+
+    snprintf(buffer, sizeof(buffer), "%lld", entry->last_used_at);
+    cJSON_AddStringToObject(json_token, "last_used_at", buffer);
+
+    if(entry->type == ApiApiTokensEntryTypeFull) {
+        cJSON_AddStringToObject(json_token, "token", entry->full_token);
+    }
+
+    return json_token;
+}
+
+static void add_token_entry_to_json(const ApiTokensEntry* entry, void* context) {
+    cJSON* json_tokens = context;
+    cJSON_AddItemToArray(json_tokens, api_access_tokens_entry_to_json(entry));
+}
+
+bool api_access_api_tokens_list_callback(
+    FuriString* path,
+    HttpMethod method,
+    struct mg_connection* conn,
+    struct mg_http_message* msg,
+    void* ctx) {
+    UNUSED(method);
+    UNUSED(msg);
+    ApiRootCtx* context = ctx;
+    if(!IS_HTTP_ENDPOINT(path)) {
+        MG_REPLY_NOT_FOUND(conn);
+        return false;
+    }
+
+    cJSON* json = cJSON_CreateObject();
+    cJSON* json_tokens = cJSON_AddArrayToObject(json, "tokens");
+    api_tokens_list(context->tokens, add_token_entry_to_json, json_tokens);
+
+    char* response = cJSON_Print(json);
+    MG_REPLY_OK_BODY(conn, "%s", response);
+    free(response);
+
+    cJSON_Delete(json);
+    return true;
+}
+
+void token_generated(const ApiTokensEntry* entry, void* context) {
+    struct mg_connection* conn = context;
+    cJSON* json_token = api_access_tokens_entry_to_json(entry);
+    char* token_serialized = cJSON_Print(json_token);
+    MG_REPLY_OK_BODY(conn, "%s", token_serialized);
+    free(token_serialized);
+    cJSON_Delete(json_token);
+}
+
+bool api_access_api_tokens_mint_callback(
+    FuriString* path,
+    HttpMethod method,
+    struct mg_connection* conn,
+    struct mg_http_message* msg,
+    void* ctx) {
+    UNUSED(method);
+    UNUSED(msg);
+    ApiRootCtx* context = ctx;
+    if(!IS_HTTP_ENDPOINT(path)) {
+        MG_REPLY_NOT_FOUND(conn);
+        return false;
+    }
+
+    HttpApiAccessStatusEx status_ex = http_api_access_status(context, path, method, conn, msg);
+    if(status_ex.status == HttpApiAccessStatusGrantedViaToken) {
+        MG_REPLY_FORBIDDEN(conn);
+        return true;
+    }
+
+    char* name = mg_json_get_str(msg->body, "$.name");
+    if(!name) {
+        MG_REPLY_BAD_REQUEST(conn);
+        return true;
+    }
+
+    api_tokens_mint(context->tokens, name, token_generated, conn);
+
+    free(name);
+    return true;
+}
+
+bool api_access_api_tokens_revoke_callback(
+    FuriString* path,
+    HttpMethod method,
+    struct mg_connection* conn,
+    struct mg_http_message* msg,
+    void* ctx) {
+    UNUSED(method);
+    UNUSED(msg);
+    ApiRootCtx* context = ctx;
+
+    HttpApiAccessStatusEx status_ex = http_api_access_status(context, path, method, conn, msg);
+
+    FuriString* id_for_deletion = path;
+    furi_string_right(id_for_deletion, furi_string_search_rchar(id_for_deletion, '/') + 1);
+    bool revoke_all = furi_string_empty(id_for_deletion);
+    bool token_access = status_ex.status == HttpApiAccessStatusGrantedViaToken;
+
+    if(revoke_all) {
+        if(token_access) {
+            MG_REPLY_FORBIDDEN(conn);
+        } else {
+            api_tokens_reset_all(context->tokens);
+            MG_REPLY_OK(conn);
+        }
+
+    } else {
+        char accessing_id[API_TOKENS_SHORT_ID_LENGTH + 1];
+        memcpy(accessing_id, status_ex.token, sizeof(accessing_id) - 1);
+        accessing_id[sizeof(accessing_id) - 1] = '\0';
+
+        if(token_access && (furi_string_cmp_str(id_for_deletion, accessing_id) != 0)) {
+            MG_REPLY_FORBIDDEN(conn);
+        } else {
+            bool token_found =
+                api_tokens_revoke(context->tokens, furi_string_get_cstr(id_for_deletion));
+            if(token_found) {
+                MG_REPLY_OK(conn);
+            } else {
+                MG_REPLY_NOT_FOUND(conn);
+            }
+        }
+    }
+
+    return true;
+}
+
+bool api_access_tokens_callback(
+    FuriString* path,
+    HttpMethod method,
+    struct mg_connection* conn,
+    struct mg_http_message* msg,
+    void* ctx) {
+    if(method == HttpMethodGet) {
+        return api_access_api_tokens_list_callback(path, method, conn, msg, ctx);
+    } else if(method == HttpMethodPost) {
+        return api_access_api_tokens_mint_callback(path, method, conn, msg, ctx);
+    } else if(method == HttpMethodDelete) {
+        return api_access_api_tokens_revoke_callback(path, method, conn, msg, ctx);
+    } else {
+        MG_REPLY_METHOD_NOT_ALLOWED(conn, "Allow: GET, POST, DELETE\r\n");
+        return true;
+    }
 }
 
 static const HttpHandler handlers_api_root[] = {
@@ -504,6 +808,15 @@ static const HttpHandler handlers_api_root[] = {
         .ctx_free = http_api_smart_home_free,
         .on_request = http_api_smart_home_callback,
     },
+    {
+        .uri = "apps",
+        .method = HttpMethodAny,
+        .type = HttpHandlerCustom,
+        .ctx_alloc = http_api_apps_alloc,
+        .ctx_free = http_api_apps_free,
+        .on_request = http_api_apps_callback,
+        .on_headers = http_api_apps_hdr_callback_root,
+    },
 };
 
 void* http_api_root_alloc(void) {
@@ -534,6 +847,8 @@ void* http_api_root_alloc(void) {
     }
     json_config_free(cfg);
 
+    context->tokens = furi_record_open(RECORD_API_TOKENS);
+
     return context;
 }
 
@@ -542,6 +857,7 @@ void http_api_root_free(void* ctx) {
     ApiRootCtx* context = ctx;
     HttpHandlersList_clear(context->handlers);
     furi_string_free(context->access_key);
+    furi_record_close(RECORD_API_TOKENS);
     free(context);
 }
 
@@ -553,6 +869,9 @@ bool http_api_root_callback(
     void* ctx) {
     ApiRootCtx* context = ctx;
     bool handled;
+
+    const char* access_tokens_path = "access/tokens";
+
     if(furi_string_equal(path, "access")) {
         if(method == HttpMethodGet) {
             http_api_access_get_callback(context, conn);
@@ -564,6 +883,14 @@ bool http_api_root_callback(
             http_reply_405_method_not_allowed(conn, HttpMethodPost | HttpMethodGet, false);
         }
         handled = true;
+    } else if(furi_string_start_with_str(path, access_tokens_path)) {
+        if(method == HttpMethodOptions) {
+            http_reply_cors_preflight(conn, HttpMethodGet | HttpMethodPost | HttpMethodDelete);
+            handled = true;
+        } else {
+            furi_string_right(path, strlen(access_tokens_path));
+            handled = api_access_tokens_callback(path, method, conn, msg, ctx);
+        }
     } else {
         handled = http_handle_request(path, method, context->handlers, conn, msg);
     }
@@ -582,7 +909,8 @@ bool http_api_root_hdr_callback(
 
     // OPTIONS preflights fall through to MG_EV_HTTP_MSG for http_reply_cors_preflight()
 
-    if(!http_api_is_access_allowed(context, path, method, conn, msg)) {
+    HttpApiAccessStatusEx status_ex = http_api_access_status(context, path, method, conn, msg);
+    if(!(status_ex.status & HttpApiAccessStatusGranted)) {
         MG_REPLY_ERROR_CLOSE(conn, 403, "Forbidden");
         http_api_log_access(conn, msg, 403);
         MG_CLOSE_AFTER_HEADERS(conn, msg);

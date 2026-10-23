@@ -82,14 +82,33 @@ Color color_hex_to_rgb(uint32_t hex);
 Color color_hexa_to_rgb(uint32_t hexa);
 
 /**
+ * @brief Convert a HEX `"#RRGGBB"` representation to an RGB color
+ *
+ * @param[in] hex Hex value to convert (`"#RRGGBB"`)
+ * @param[out] color_out Color structure to fill
+ *
+ * @return Parsing status (`true` = success)
+ */
+bool color_parse_hex_string(const char* hex, Color* color_out);
+
+/**
  * @brief Convert a HEX `"#RRGGBBAA"` representation to an RGB color
- * 
+ *
  * @param[in] hexa Hex value to convert (`"#RRGGBBAA"`)
  * @param[out] color_out Color structure to fill
- * 
+ *
  * @return Parsing status (`true` = success)
  */
 bool color_parse_hexa_string(const char* hexa, Color* color_out);
+
+/**
+ * @brief Convert an RGB color to an L8 luminance value
+ *
+ * @param[in] color Color to convert
+ *
+ * @return Luminance value in the range 0–255
+ */
+uint8_t color_rgb_to_l8(Color color);
 
 /**
  * @brief Convert an L8-encoded color data into L4

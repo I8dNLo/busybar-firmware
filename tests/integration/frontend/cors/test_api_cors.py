@@ -10,6 +10,10 @@ _HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
 API_ENDPOINTS = [
     ("/api/access", "GET"),
     ("/api/access", "POST"),
+    ("/api/access/tokens", "GET"),
+    ("/api/access/tokens", "POST"),
+    ("/api/access/tokens", "DELETE"),
+    ("/api/access/tokens/{short_id}", "DELETE"),
     ("/api/account", "DELETE"),
     ("/api/account/backend", "GET"),
     ("/api/account/backend", "PUT"),
@@ -78,6 +82,15 @@ API_ENDPOINTS = [
     ("/api/wifi/disconnect", "POST"),
     ("/api/wifi/networks", "GET"),
     ("/api/wifi/status", "GET"),
+    ("/api/apps", "DELETE"),
+    ("/api/apps/list", "GET"),
+    ("/api/apps/stage", "POST"),
+    ("/api/apps/install", "POST"),
+    ("/api/apps/launch", "POST"),
+    ("/api/apps/quit", "POST"),
+    ("/api/apps/settings", "GET"),
+    ("/api/apps/settings", "PUT"),
+    ("/api/apps/settings", "DELETE"),
 ]
 
 

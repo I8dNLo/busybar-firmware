@@ -7,9 +7,12 @@
 
 #if defined(BSB_MCU_U5)
 #include <mongoose_glue.h>
+#include <mongoose_dns_i.h>
 #endif // BSB_MCU_U5
 
 #define TAG "Network"
+
+#define DUMMY_RECORD ((void*)0xD00DAD)
 
 static const char* const netif_names[] = {
     [NetworkNetifWifi] = "WL",
@@ -43,12 +46,12 @@ static void network_tcpip_init_done_callback(void* arg) {
 }
 
 void network_init_current_thread(Network* instance) {
-    UNUSED(instance);
+    furi_check(instance == DUMMY_RECORD);
     netconn_thread_init();
 }
 
 void network_deinit_current_thread(Network* instance) {
-    UNUSED(instance);
+    furi_check(instance == DUMMY_RECORD);
     netconn_thread_cleanup();
 }
 
@@ -64,5 +67,9 @@ void network_on_system_start(void) {
     mg_init_early();
 #endif // BSB_MCU_U5
 
-    furi_record_create(RECORD_NETWORK, NULL);
+    furi_record_create(RECORD_NETWORK, DUMMY_RECORD);
+
+#if defined(BSB_MCU_U5)
+    mongoose_dns_startup();
+#endif // BSB_MCU_U5
 }

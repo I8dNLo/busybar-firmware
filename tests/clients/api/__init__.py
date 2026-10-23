@@ -62,8 +62,19 @@ from .storage import (
 from .assets import (
     AssetResultResponse,
     AssetsAPI,
+    DisplayDeleteRequest,
     DisplayDrawRequest,
     DisplayElement,
+)
+
+# JavaScript Apps API
+from .apps import (
+    AppInfo,
+    AppListResponse,
+    AppSettingsDocument,
+    AppsAPI,
+    AppsResultResponse,
+    AppStageResponse,
 )
 
 # Account API
@@ -87,11 +98,15 @@ from .ble import (
 # Settings API
 from .settings import (
     AccessResponse,
+    AccessTokensResponse,
     BrightnessResponse,
+    CreateAccessTokenRequest,
+    MintedAccessToken,
     NameResponse,
     SetNameRequest,
     SettingsAPI,
     SettingsResultResponse,
+    StoredAccessToken,
     VolumeResponse,
 )
 
@@ -167,6 +182,13 @@ __all__ = [
     "AssetResultResponse",
     "DisplayElement",
     "DisplayDrawRequest",
+    "DisplayDeleteRequest",
+    "AppsAPI",
+    "AppInfo",
+    "AppListResponse",
+    "AppSettingsDocument",
+    "AppStageResponse",
+    "AppsResultResponse",
     "AccountAPI",
     "AccountBackend",
     "AccountInfoResponse",
@@ -180,10 +202,14 @@ __all__ = [
     "SettingsAPI",
     "NameResponse",
     "AccessResponse",
+    "StoredAccessToken",
+    "MintedAccessToken",
+    "AccessTokensResponse",
     "BrightnessResponse",
     "VolumeResponse",
     "SettingsResultResponse",
     "SetNameRequest",
+    "CreateAccessTokenRequest",
     "InputAPI",
     "InputKeyRequest",
     "InputErrorResponse",
